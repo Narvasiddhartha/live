@@ -711,9 +711,23 @@ MONITOR_HTML = """
     const frameEl = document.getElementById("frame");
     const detailsEl = document.getElementById("details");
 
+    let polling = true;
     async function poll() {
+        if (!polling) {
+            return;
+        }
         try {
             const response = await fetch(statusUrl);
+            if (response.status === 404) {
+                detailsEl.textContent = "Session not found. It may be closed or expired.";
+                polling = false;
+                return;
+            }
+            if (response.status === 410) {
+                detailsEl.textContent = "Session expired. Generate a new link to resume.";
+                polling = false;
+                return;
+            }
             if (!response.ok) {
                 throw new Error("Server responded with " + response.status);
             }
@@ -725,7 +739,9 @@ MONITOR_HTML = """
         } catch (error) {
             detailsEl.textContent = "Waiting for data… " + error.message;
         } finally {
-            setTimeout(poll, 3000);
+            if (polling) {
+                setTimeout(poll, 3000);
+            }
         }
     }
     poll();
