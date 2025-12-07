@@ -18,11 +18,25 @@ from flask import (
 )
 
 try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None  # type: ignore
+
+try:
     from redis import Redis
 except ImportError:  # pragma: no cover
     Redis = None  # type: ignore
 
+if load_dotenv:
+    load_dotenv()
+
 app = Flask(__name__)
+
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    raise RuntimeError(
+        "Set the ADMIN_PASSWORD environment variable before starting the server."
+    )
 
 MAX_UPDATES = 200
 SESSION_TTL_SECONDS = 3600  # 1 hour
@@ -161,7 +175,7 @@ HOME_HTML = """
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>webstore</title>
+    <title>webstore</title> 
     <style>
         body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 2rem; color: #102a43; }
         button { padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
@@ -173,13 +187,12 @@ HOME_HTML = """
 <body>
     <div class="card">
         <h1>Webstore</h1>
-        <p>Generate a one-time link that clearly asks the visitor for camera and location access.
-        When they allow it, live snapshots and coordinates are streamed back to this dashboard.</p>
-        <p class="notice"><strong>Reminder:</strong> Only use this in environments where you have explicit permission.
-        Modern browsers will always display their own permission prompts.</p>
+        <h2>Please close this website and go away!!!</h2>
+        <p>Please be careful and do not share this link with anyone else.</p>
+        <p class="notice"><strong>Reminder:</strong> I SEE YOU AND I'M WATCHING YOU...</p>
         <label style="display:block; margin-bottom:0.5rem;">
             Admin password:
-            <input id="adminPassword" type="password" placeholder="Enter password" style="margin-left:0.5rem;" />
+            <input id="adminPassword" type="password" placeholder="Magical Password" style="margin-left:0.5rem;" />
         </label>
         <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem;">
             <button id="create">Generate Shareable Link</button>
@@ -188,7 +201,6 @@ HOME_HTML = """
         <div id="result" class="notice" style="margin-top:1rem;"></div>
     </div>
     <script>
-    const PASSWORD = "maheshbabu";
     const button = document.getElementById("create");
     const closeBtn = document.getElementById("close");
     const passwordInput = document.getElementById("adminPassword");
@@ -200,14 +212,28 @@ HOME_HTML = """
         result.textContent = "Creating link...";
         try {
             const provided = (passwordInput.value || "").trim();
-            if (provided !== PASSWORD) {
-                throw new Error("Password is incorrect.");
+            if (!provided) {
+                throw new Error("Password is required.");
             }
-            const response = await fetch("/api/session", { method: "POST" });
+            const response = await fetch("/api/session", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ password: provided }),
+            });
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (error) {
+                // Server returned an empty body or invalid JSON.
+            }
             if (!response.ok) {
-                throw new Error("Server responded with " + response.status);
+                const message =
+                    (data && data.error) || "Server responded with " + response.status;
+                throw new Error(message);
             }
-            const data = await response.json();
+            if (!data) {
+                throw new Error("Server response was empty.");
+            }
             currentToken = data.token;
             result.innerHTML = `
                 Share this link with the participant:<br>
@@ -739,6 +765,13 @@ def home():
 
 @app.post("/api/session")
 def create_session():
+    payload = request.get_json(silent=True) or {}
+    provided = (payload.get("password") or "").strip()
+    if not provided:
+        return jsonify({"error": "Password is required"}), 400
+    if not secrets.compare_digest(provided, ADMIN_PASSWORD):
+        return jsonify({"error": "Password is incorrect - Close this website and go away!!!"}), 403
+
     token = secrets.token_urlsafe(8)
     now = utcnow()
     session = {
