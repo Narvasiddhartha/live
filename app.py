@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from collections import deque
-from datetime import datetime, timezone
-from typing import Any, Deque, Dict
+from datetime import datetime, timedelta, timezone
+from typing import Any, Deque, Dict, Optional
 
 from flask import (
     Flask,
@@ -18,7 +19,55 @@ from flask import (
 app = Flask(__name__)
 
 MAX_UPDATES = 200
-sessions: Dict[str, Dict[str, Any]] = {}
+SESSION_TTL_SECONDS = 3600  # 1 hour
+SESSION_STATE_FILE = os.path.join(os.path.dirname(__file__), "session_state.json")
+
+
+def load_sessions_from_disk() -> Dict[str, Dict[str, Any]]:
+    if not os.path.exists(SESSION_STATE_FILE):
+        return {}
+    try:
+        with open(SESSION_STATE_FILE, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    loaded: Dict[str, Dict[str, Any]] = {}
+    for token, payload in raw.items():
+        try:
+            created_at = datetime.fromisoformat(payload["created_at"])
+            expires_at = datetime.fromisoformat(payload["expires_at"])
+            last_seen = payload.get("last_seen")
+            updates_raw = payload.get("updates", [])
+        except (KeyError, ValueError):
+            continue
+        loaded[token] = {
+            "token": token,
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "last_seen": datetime.fromisoformat(last_seen) if last_seen else None,
+            "updates": deque(updates_raw, maxlen=MAX_UPDATES),
+        }
+    return loaded
+
+
+def persist_sessions_to_disk() -> None:
+    serializable: Dict[str, Any] = {}
+    for token, session in sessions.items():
+        serializable[token] = {
+            "token": token,
+            "created_at": to_iso(session["created_at"]),
+            "expires_at": to_iso(session["expires_at"]),
+            "last_seen": to_iso(session.get("last_seen")),  # type: ignore[arg-type]
+            "updates": list(session["updates"]),
+        }
+    tmp_path = SESSION_STATE_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(serializable, fh)
+    os.replace(tmp_path, SESSION_STATE_FILE)
+
+
+sessions: Dict[str, Dict[str, Any]] = load_sessions_from_disk()
 
 HOME_HTML = """
 <!doctype html>
@@ -41,14 +90,20 @@ HOME_HTML = """
         When they allow it, live snapshots and coordinates are streamed back to this dashboard.</p>
         <p class="notice"><strong>Reminder:</strong> Only use this in environments where you have explicit permission.
         Modern browsers will always display their own permission prompts.</p>
-        <button id="create">Generate Shareable Link</button>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button id="create">Generate Shareable Link</button>
+            <button id="close" disabled>Close Session</button>
+        </div>
         <div id="result" class="notice" style="margin-top:1rem;"></div>
     </div>
     <script>
     const button = document.getElementById("create");
+    const closeBtn = document.getElementById("close");
     const result = document.getElementById("result");
+    let currentToken = null;
     async function createLink() {
         button.disabled = true;
+        closeBtn.disabled = true;
         result.textContent = "Creating link...";
         try {
             const response = await fetch("/api/session", { method: "POST" });
@@ -56,19 +111,46 @@ HOME_HTML = """
                 throw new Error("Server responded with " + response.status);
             }
             const data = await response.json();
+            currentToken = data.token;
             result.innerHTML = `
                 Share this link with the participant:<br>
                 <a href="${data.link}" target="_blank" rel="noopener">${data.link}</a><br><br>
                 Monitor their updates here:<br>
-                <a href="${data.monitor}" target="_blank" rel="noopener">${data.monitor}</a>
+                <a href="${data.monitor}" target="_blank" rel="noopener">${data.monitor}</a><br><br>
+                <strong>Expires at:</strong> ${data.expires_at}
             `;
+            closeBtn.disabled = false;
         } catch (error) {
             result.textContent = "Failed to create link: " + error.message;
         } finally {
             button.disabled = false;
         }
     }
+
+    async function closeSession() {
+        if (!currentToken) {
+            return;
+        }
+        button.disabled = true;
+        closeBtn.disabled = true;
+        result.textContent = "Closing session…";
+        try {
+            const response = await fetch(`/api/session/${currentToken}`, { method: "DELETE" });
+            if (!response.ok) {
+                throw new Error("Server responded with " + response.status);
+            }
+            result.textContent = "Session closed. Links are now inactive.";
+            currentToken = null;
+        } catch (error) {
+            result.textContent = "Failed to close session: " + error.message;
+            closeBtn.disabled = false;
+        } finally {
+            button.disabled = false;
+        }
+    }
+
     button.addEventListener("click", createLink);
+    closeBtn.addEventListener("click", closeSession);
     </script>
 </body>
 </html>
@@ -530,14 +612,27 @@ MONITOR_HTML = """
 """
 
 
-def iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def to_iso(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    return dt.isoformat()
 
 
 def ensure_session(token: str) -> Dict[str, Any]:
     session = sessions.get(token)
     if not session:
         abort(404, description="Unknown session token")
+
+    now = utcnow()
+    expires_at: datetime = session["expires_at"]
+    if now > expires_at:
+        sessions.pop(token, None)
+        persist_sessions_to_disk()
+        abort(410, description="Session expired")
     return session
 
 
@@ -549,18 +644,33 @@ def home():
 @app.post("/api/session")
 def create_session():
     token = secrets.token_urlsafe(8)
+    now = utcnow()
     sessions[token] = {
         "token": token,
-        "created": iso_now(),
+        "created_at": now,
+        "expires_at": now + timedelta(seconds=SESSION_TTL_SECONDS),
+        "last_seen": None,
         "updates": deque(maxlen=MAX_UPDATES),
     }
+    persist_sessions_to_disk()
     return jsonify(
         {
             "token": token,
             "link": url_for("track_page", token=token, _external=True),
             "monitor": url_for("monitor_page", token=token, _external=True),
+            "expires_at": to_iso(now + timedelta(seconds=SESSION_TTL_SECONDS)),
+            "ttl_seconds": SESSION_TTL_SECONDS,
         }
     )
+
+
+@app.delete("/api/session/<token>")
+def close_session(token: str):
+    removed = sessions.pop(token, None)
+    if removed:
+        persist_sessions_to_disk()
+        return jsonify({"status": "closed", "token": token})
+    abort(404, description="Unknown session token")
 
 
 @app.get("/track/<token>")
@@ -585,7 +695,7 @@ def monitor_page(token: str):
 def ingest_update(token: str):
     session = ensure_session(token)
     payload = request.get_json(silent=True) or {}
-    entry: Dict[str, Any] = {"ts": iso_now()}
+    entry: Dict[str, Any] = {"ts": to_iso(utcnow())}
 
     location = payload.get("location")
     if isinstance(location, dict):
@@ -610,7 +720,8 @@ def ingest_update(token: str):
 
     updates: Deque[Dict[str, Any]] = session["updates"]  # type: ignore[assignment]
     updates.append(entry)
-    session["last_seen"] = entry["ts"]
+    session["last_seen"] = utcnow()
+    persist_sessions_to_disk()
 
     return jsonify({"status": "ok"})
 
@@ -623,10 +734,12 @@ def session_status(token: str):
     return jsonify(
         {
             "token": token,
-            "created": session["created"],
-            "last_seen": session.get("last_seen"),
+            "created": to_iso(session["created_at"]),
+            "expires_at": to_iso(session["expires_at"]),
+            "last_seen": to_iso(session.get("last_seen")),  # type: ignore[arg-type]
             "history_count": len(updates),
             "latest": latest,
+            "ttl_seconds": SESSION_TTL_SECONDS,
         }
     )
 
