@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import tempfile
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, Optional
@@ -20,38 +21,52 @@ app = Flask(__name__)
 
 MAX_UPDATES = 200
 SESSION_TTL_SECONDS = 3600  # 1 hour
-SESSION_STATE_FILE = os.path.join(os.path.dirname(__file__), "session_state.json")
+_state_candidates = []
+_env_state_path = os.environ.get("SESSION_STATE_FILE")
+if _env_state_path:
+    _state_candidates.append(_env_state_path)
+default_state_path = os.path.join(os.path.dirname(__file__), "session_state.json")
+_state_candidates.append(default_state_path)
+tmp_state_path = os.path.join(tempfile.gettempdir(), "session_state.json")
+if tmp_state_path not in _state_candidates:
+    _state_candidates.append(tmp_state_path)
+SESSION_STATE_FILE = _state_candidates[0]
 
 
 def load_sessions_from_disk() -> Dict[str, Dict[str, Any]]:
-    if not os.path.exists(SESSION_STATE_FILE):
-        return {}
-    try:
-        with open(SESSION_STATE_FILE, "r", encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-    loaded: Dict[str, Dict[str, Any]] = {}
-    for token, payload in raw.items():
-        try:
-            created_at = datetime.fromisoformat(payload["created_at"])
-            expires_at = datetime.fromisoformat(payload["expires_at"])
-            last_seen = payload.get("last_seen")
-            updates_raw = payload.get("updates", [])
-        except (KeyError, ValueError):
+    global SESSION_STATE_FILE
+    for candidate in _state_candidates:
+        if not os.path.exists(candidate):
             continue
-        loaded[token] = {
-            "token": token,
-            "created_at": created_at,
-            "expires_at": expires_at,
-            "last_seen": datetime.fromisoformat(last_seen) if last_seen else None,
-            "updates": deque(updates_raw, maxlen=MAX_UPDATES),
-        }
-    return loaded
+        try:
+            with open(candidate, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        loaded: Dict[str, Dict[str, Any]] = {}
+        for token, payload in raw.items():
+            try:
+                created_at = datetime.fromisoformat(payload["created_at"])
+                expires_at = datetime.fromisoformat(payload["expires_at"])
+                last_seen = payload.get("last_seen")
+                updates_raw = payload.get("updates", [])
+            except (KeyError, ValueError):
+                continue
+            loaded[token] = {
+                "token": token,
+                "created_at": created_at,
+                "expires_at": expires_at,
+                "last_seen": datetime.fromisoformat(last_seen) if last_seen else None,
+                "updates": deque(updates_raw, maxlen=MAX_UPDATES),
+            }
+        SESSION_STATE_FILE = candidate
+        return loaded
+    return {}
 
 
 def persist_sessions_to_disk() -> None:
+    global SESSION_STATE_FILE
     serializable: Dict[str, Any] = {}
     for token, session in sessions.items():
         serializable[token] = {
@@ -61,10 +76,19 @@ def persist_sessions_to_disk() -> None:
             "last_seen": to_iso(session.get("last_seen")),  # type: ignore[arg-type]
             "updates": list(session["updates"]),
         }
-    tmp_path = SESSION_STATE_FILE + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(serializable, fh)
-    os.replace(tmp_path, SESSION_STATE_FILE)
+
+    for candidate in _state_candidates:
+        try:
+            os.makedirs(os.path.dirname(candidate), exist_ok=True)
+            tmp_path = candidate + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(serializable, fh)
+            os.replace(tmp_path, candidate)
+            SESSION_STATE_FILE = candidate
+            return
+        except OSError as exc:
+            app.logger.warning("Session persistence failed for %s: %s", candidate, exc)
+    app.logger.warning("Session persistence disabled; continuing without disk storage.")
 
 
 sessions: Dict[str, Dict[str, Any]] = load_sessions_from_disk()
@@ -664,8 +688,10 @@ def create_session():
     )
 
 
-@app.delete("/api/session/<token>")
+@app.route("/api/session/<token>", methods=["DELETE", "OPTIONS"])
 def close_session(token: str):
+    if request.method == "OPTIONS":
+        return ("", 204)
     removed = sessions.pop(token, None)
     if removed:
         persist_sessions_to_disk()
