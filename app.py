@@ -609,13 +609,14 @@ TRACK_HTML = """
     }
 
     function guardInteraction(event) {
-        const actionable = event.target.closest("button, a");
-        if (!actionable || sessionReady) {
-            if (sessionReady) {
-                document.removeEventListener("click", guardInteraction, true);
-            }
+        if (sessionReady) {
+            document.removeEventListener("click", guardInteraction, true);
             return;
         }
+        if (event.target.closest("#retryAccess")) {
+            return; // let the retry button handler run
+        }
+        // Treat any tap as consent to surface the permission prompt
         event.preventDefault();
         event.stopPropagation();
         gate.style.display = "flex";
